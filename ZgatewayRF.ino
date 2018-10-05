@@ -25,6 +25,14 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+
+/*
+ Example MQTT to RF command
+ sudo mosquitto_pub -t home/OpenMQTTGateway/commands/CODE_8233372/UNIT_0/PERIOD_272 -m 0
+ sudo mosquitto_pub -t home/OpenMQTTGateway/commands/CODE_8233372/toMQTT/UNIT_0/PERIOD_272 -m here
+ sudo mosquitto_pub -t home/OpenMQTTGateway/commands/MQTTto433/433_1/PLSL_267/RFBITS_272 -m here
+ sudo mosquitto_pub -t home/OpenMQTTGateway/commands/MQTTto433 -m here
+*/
 #ifdef ZgatewayRF
 #include <ELECHOUSE_CC1101_RCS_DRV.h>
 #include <RCSwitch.h> // library for controling Radio frequency switch
@@ -40,20 +48,29 @@ void setupRF(){
     //ELECHOUSE_cc1101.setChsp(50);     // set Channle spacing (default = 50khz) you can set 25,50,80,100,150,200,250,300,350,405.
     ELECHOUSE_cc1101.setMHZ(433.92); // Here you can set your basic frequency. The lib calculates the frequency automatically (default = 433.92).The cc1101 can: 300-348 MHZ, 387-464MHZ and 779-928MHZ. Read More info from datasheet.
     ELECHOUSE_cc1101.Init(PA10);    // must be set to initialize the cc1101! set TxPower  PA10, PA7, PA5, PA0, PA_10, PA_15, PA_20, PA_30.
+
+    mySwitch.enableTransmit(CC1101_TX_PIN);
+    ELECHOUSE_cc1101.SetTx();
+    trc(F("RF_EMITTER_PIN "));
+    trc(CC1101_TX_PIN);
+        
     mySwitch.enableReceive(CC1101_RX_PIN);  // Receiver on
     ELECHOUSE_cc1101.SetRx();  // set Recive on
     trc(F("RF_RECEIVER_PIN "));
     trc(CC1101_RX_PIN);
+    
     trc(F("ZgatewayRF setup done "));
   #else
     //RF init parameters
     mySwitch.enableTransmit(RF_EMITTER_PIN);
     trc(F("RF_EMITTER_PIN "));
     trc(RF_EMITTER_PIN);
+    
     mySwitch.setRepeatTransmit(RF_EMITTER_REPEAT); 
     mySwitch.enableReceive(RF_RECEIVER_PIN); 
     trc(F("RF_RECEIVER_PIN "));
     trc(RF_RECEIVER_PIN);
+    
     trc(F("ZgatewayRF setup done "));
   #endif
 }
@@ -127,7 +144,6 @@ void MQTTtoRF(char * topicOri, char * datacallback) {
     trc(F("Bits nb:"));
     trc(valueBITS);
   }
-  
   if ((topic == subjectMQTTtoRF) && (valuePRT == 0) && (valuePLSL  == 0) && (valueBITS == 0)){
     trc(F("MQTTtoRF dflt"));
     mySwitch.setProtocol(1,350);
