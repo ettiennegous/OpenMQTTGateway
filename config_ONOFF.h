@@ -30,5 +30,10 @@
 #define subjectGTWONOFFtoMQTT  Base_Topic Gateway_Name "/ONOFFtoMQTT"
 
 /*-------------------PIN DEFINITIONS----------------------*/
-#define ACTUATOR_ONOFF_PIN 4 
-
+#ifdef ESP8266
+    #define ACTUATOR_ONOFF_PIN 15 //12 for sonoff basic relay
+#elif ESP32
+    #define ACTUATOR_ONOFF_PIN 15 
+#else
+    #define ACTUATOR_ONOFF_PIN 13
+#endif

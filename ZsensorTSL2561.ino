@@ -50,15 +50,15 @@ void displaySensorDetails(void)
 {
   sensor_t sensor;
   tsl.getSensor(&sensor);
-  trc("------------------------------------");
+  trc(F("------------------------------------"));
   trc("Sensor:       " + String(sensor.name));
   trc("Driver Ver:   " + String(sensor.version));
   trc("Unique ID:    " + String(sensor.sensor_id));
   trc("Max Value:    " + String(sensor.max_value) + " lux");
   trc("Min Value:    " + String(sensor.min_value) + " lux");
   trc("Resolution:   " + String(sensor.resolution) + " lux");
-  trc("------------------------------------");
-  trc("");
+  trc(F("------------------------------------"));
+  trc(F(""));
   delay(500);
 }
 
@@ -69,7 +69,7 @@ void setupZsensorTSL2561()
 
   if (!tsl.begin())
   {
-    trc("No TSL2561 detected");
+    trc(F("No TSL2561 detected"));
   }
   
   // enable auto ranging
@@ -81,7 +81,7 @@ void setupZsensorTSL2561()
   // tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_101MS);  /* medium resolution and speed   */
   tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_402MS);
 
-  trc("TSL2561 Initialized. Printing detials now.");
+  trc(F("TSL2561 Initialized. Printing detials now."));
   displaySensorDetails();  
 }
 
@@ -90,6 +90,11 @@ void MeasureLightIntensityTSL2561()
   if (millis() > (timetsl2561 + TimeBetweenReadingtsl2561)) {
     static uint32_t persisted_lux;
     timetsl2561 = millis();
+
+    trc(F("Creating TSL2561 buffer"));
+    const int JSON_MSG_CALC_BUFFER = JSON_OBJECT_SIZE(3);
+    StaticJsonBuffer<JSON_MSG_CALC_BUFFER> jsonBuffer;
+    JsonObject& TSL2561data = jsonBuffer.createObject();
     
     sensors_event_t event;
     tsl.getEvent(&event);
@@ -98,18 +103,18 @@ void MeasureLightIntensityTSL2561()
       {
 	if (persisted_lux != event.light || tsl2561_always ) {
 	  persisted_lux = event.light;
-	  	  
-	  trc("Sending Light Intensity in Lux to MQTT " + String(event.light) + " lux");
-	  client.publish(LUX, String(event.light).c_str());
-	  client.publish(FTCD, String((event.light)/10.764).c_str());
-	  client.publish(WATTSM2, String((event.light)/683.0).c_str());
+
+    TSL2561data.set("lux", (float)event.light);
+    TSL2561data.set("ftcd", (float)(event.light)/10.764);
+    TSL2561data.set("wattsm2", (float)(event.light)/683.0);
+
+    pub(subjectTSL12561toMQTT,TSL2561data);
 	} else {
-	  trc("Same lux value, do not send");
+	  trc(F("Same lux value, do not send"));
 	}
       } else {
-      trc("Failed to read from TSL2561");
+      trc(F("Failed to read from TSL2561"));
     }
   }
 }
 #endif
-
