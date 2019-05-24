@@ -29,8 +29,9 @@
 /*
  Example MQTT to RF command
  sudo mosquitto_pub -t home/OpenMQTTGateway/commands/CODE_8233372/UNIT_0/PERIOD_272 -m 0
- sudo mosquitto_pub -t home/OpenMQTTGateway/commands/CODE_8233372/toMQTT/UNIT_0/PERIOD_272 -m here
- sudo mosquitto_pub -t home/OpenMQTTGateway/commands/MQTTto433/433_1/PLSL_267/RFBITS_272 -m here
+ sudo mosquitto_pub -t home/OpenMQTTGateway/commands/CODE_8233372/toMQTT/UNIT_0/PERIOD_272 -m 2599032
+ sudo mosquitto_pub -t home/OpenMQTTGateway/commands/MQTTto433/433_1/PLSL_123/RFBITS_272 -m 2599028
+ sudo mosquitto_pub -t home/OpenMQTTGateway/commands/MQTTto433/433_1/PLSL_123 -m 2599028
  sudo mosquitto_pub -t home/OpenMQTTGateway/commands/MQTTto433 -m here
 */
 #ifdef ZgatewayRF
