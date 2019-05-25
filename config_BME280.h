@@ -35,20 +35,12 @@
    ADD ---------> N/C (Not Connected) --> N/C (Not Connected)
 
 */
-
-#define bme280_always true // if false when the current value for light Level (Lux) is the same as previous one don't send it by MQTT
+#define bme280_always true // if false when the current value of the parameter is the same as previous one don't send it by MQTT
 #define TimeBetweenReadingbme280 30000
 
 /*----------------------------USER PARAMETERS-----------------------------*/
 /*-------------DEFINE YOUR MQTT PARAMETERS BELOW----------------*/
-#define TEMPBMEC   Base_Topic Gateway_Name "/CLIMAtoMQTT/bme/tempc"
-#define TEMPBMEF   Base_Topic Gateway_Name "/CLIMAtoMQTT/bme/tempf"
-#define HUMBME    Base_Topic Gateway_Name "/CLIMAtoMQTT/bme/hum"
-#define PRESSBME    Base_Topic Gateway_Name "/CLIMAtoMQTT/bme/pa"
-#define ALTIBMEM    Base_Topic Gateway_Name "/CLIMAtoMQTT/bme/altim"
-#define ALTIBMEFT    Base_Topic Gateway_Name "/CLIMAtoMQTT/bme/altift"
+#define BMETOPIC   Base_Topic Gateway_Name "/CLIMAtoMQTT/bme"
 
 //Time used to wait for an interval before resending measured values
 unsigned long timebme280 = 0;
-
-

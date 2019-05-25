@@ -5,41 +5,10 @@
    Send and receiving command by MQTT
 
   This program enables to:
- - receive MQTT data from a topic and send RF 433Mhz signal corresponding to the received MQTT data
- - publish MQTT data to a different topic related to received 433Mhz signal
- - receive MQTT data from a topic and send IR signal corresponding to the received MQTT data
- - publish MQTT data to a different topic related to received IR signal
- - publish MQTT data to a different topic related to BLE devices rssi signal
+ - receive MQTT data from a topic and send signal (RF, IR, BLE, GSM)  corresponding to the received MQTT data
+ - publish MQTT data to a different topic related to received signals (RF, IR, BLE, GSM)
 
   Copyright: (c)Florian ROBERT
-
-  Contributors:
-  - 1technophile
-  - crankyoldgit
-  - glasruit
-  - HannesDi
-  - Landrash
-  - larsenglund
-  - ChiefZ
-  - PatteWi
-  - jumpalottahigh
-  - zerinrc
-  - philfifi
-  - Spudtater
-  - prahjister
-  - rickybrent
-  - petricaM
-  - ekim from Home assistant forum
-  - ronvl from Home assistant forum
-  - Chris Broekema
-  - Lars Englund
-  - Fredrik Lindqvist
-  - Philippe LUC
-  - Patrick Wilhelm
-  - Georgi Yanev
-  - zerinrc
-  - ChiefZ
-  - 8666
 
     This file is part of OpenMQTTGateway.
 
@@ -57,15 +26,30 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "User_config.h"
+
+// array to store previous received RFs, IRs codes and their timestamps
+#if defined(ESP8266) || defined(ESP32) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega1280__)
+  #define array_size 12
+  unsigned long ReceivedSignal[array_size][2] ={{0,0},{0,0},{0,0},{0,0},{0,0},{0,0},{0,0},{0,0},{0,0},{0,0},{0,0},{0,0}};
+  //Time used to wait for an interval before checking system measures
+  unsigned long timer_sys_measures = 0;
+#else // boards with smaller memory
+  #define array_size 4
+  unsigned long ReceivedSignal[array_size][2] ={{0,0},{0,0},{0,0},{0,0}};
+#endif
+
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 
 // Modules config inclusion
-#if defined(ZgatewayRF) || defined(ZgatewayRF2)
+#if defined(ZgatewayRF) || defined(ZgatewayRF2) || defined(ZgatewayPilight)
   #include "config_RF.h"
 #endif
 #ifdef ZgatewayRF315
   #include "config_RF315.h"
+#endif
+#ifdef ZgatewayLORA
+  #include "config_LORA.h"
 #endif
 #ifdef ZgatewaySRFB
   #include "config_SRFB.h"
@@ -109,16 +93,13 @@
 #ifdef ZsensorGPIOInput
   #include "config_GPIOInput.h"
 #endif
-// array to store previous received RFs, IRs codes and their timestamps
-#if defined(ESP8266) || defined(ESP32) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega1280__)
-  #define MQTT_MAX_PACKET_SIZE 1024
-  #define array_size 12
-  unsigned long ReceivedSignal[array_size][2] ={{0,0},{0,0},{0,0},{0,0},{0,0},{0,0},{0,0},{0,0},{0,0},{0,0},{0,0},{0,0}};
-#else // boards with smaller memory
-  #define MQTT_MAX_PACKET_SIZE 256
-  #define array_size 4
-  unsigned long ReceivedSignal[array_size][2] ={{0,0},{0,0},{0,0},{0,0}};
+#ifdef ZsensorGPIOKeyCode
+  #include "config_GPIOKeyCode.h"
 #endif
+#ifdef ZmqttDiscovery
+  #include "config_mqttDiscovery.h"
+#endif
+
 /*------------------------------------------------------------------------*/
 
 //adding this to bypass the problem of the arduino builder issue 50
@@ -126,9 +107,12 @@ void callback(char*topic, byte* payload,unsigned int length);
 
 boolean connectedOnce = false; //indicate if we have been connected once to MQTT
 
+int failure_number = 0; // number of failure connecting to MQTT
+
 #ifdef ESP32
   #include <WiFi.h>
   #include <ArduinoOTA.h>
+  #include <WiFiUdp.h>
   WiFiClient eClient;
   #ifdef MDNS_SD
     #include <ESPmDNS.h>
@@ -155,28 +139,8 @@ PubSubClient client(eClient);
 //MQTT last attemps reconnection date
 unsigned long lastReconnectAttempt = 0;
 
-//timers for LED indicators
-unsigned long timer_led_receive = 0;
-unsigned long timer_led_send = 0;
-unsigned long timer_led_error = 0;
-
-//Time used to wait for an interval before checking system measures
-unsigned long timer_sys_measures = 0;
-
-//Wifi manager parameters
-//flag for saving data
-bool shouldSaveConfig = true;
-//do we have been connected once to mqtt
-
-//callback notifying us of the need to save config
-void saveConfigCallback () {
-  trc("Should save config");
-  shouldSaveConfig = true;
-}
-
 boolean reconnect() {
-  
-  int failure_number = 0;
+
   // Loop until we're reconnected
   while (!client.connected()) {
       trc(F("MQTT connection...")); //F function enable to decrease sram usage
@@ -184,9 +148,10 @@ boolean reconnect() {
       trc(F("Connected to broker"));
       failure_number = 0;
       // Once connected, publish an announcement...
-      client.publish(will_Topic,Gateway_AnnouncementMsg,will_Retain);
+      pub(will_Topic,Gateway_AnnouncementMsg,will_Retain);
       // publish version
-      client.publish(version_Topic,OMG_VERSION,will_Retain);
+      pub(version_Topic,OMG_VERSION,will_Retain);
+
       //Subscribing to topic
       if (client.subscribe(subjectMQTTtoX)) {
         #ifdef ZgatewayRF
@@ -202,6 +167,8 @@ boolean reconnect() {
       }
       } else {
       failure_number ++; // we count the failure
+      trc(F("failure_number"));
+      trc(failure_number);
       trc(F("failed, rc="));
       trc(client.state());
       trc(F("try again in 5s"));
@@ -211,7 +178,10 @@ boolean reconnect() {
       if (failure_number > maxMQTTretry){
         trc(F("failed connecting to mqtt"));
         #if defined(ESP8266) && !defined(ESPWifiManualSetup)
-          if (!connectedOnce) setup_wifimanager(); // if we didn't connected once to mqtt we reset and start in AP mode again to have a chance to change the parameters
+          if (!connectedOnce) {
+            trc(F("fail connecting to mqtt, reseting wifi manager"));
+            setup_wifimanager(true); // if we didn't connected once to mqtt we reset and start in AP mode again to have a chance to change the parameters
+          }
         #elif defined(ESP32) || defined(ESPWifiManualSetup)// ESP32 case we don't use Wifi manager yet
           setup_wifi();
         #endif
@@ -233,8 +203,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
   memcpy(p,payload,length);
   // Conversion to a printable string
   p[length] = '\0';
-  //launch the function to treat received data
-  receivingMQTT(topic,(char *) p);
+  //launch the function to treat received data if this data concern OpenMQTTGateway
+  if ((strstr(topic, subjectMultiGTWKey) != NULL) || (strstr(topic, subjectGTWSendKey) != NULL))  receivingMQTT(topic,(char *) p);
   // Free the memory
   free(p);
 }
@@ -245,12 +215,16 @@ void setup()
   Serial.begin(SERIAL_BAUD);
   
   #if defined(ESP8266) || defined(ESP32)
+  
     #ifdef ESP8266
-      Serial.end();
-      Serial.begin(SERIAL_BAUD, SERIAL_8N1, SERIAL_TX_ONLY);// enable on ESP8266 to free some pin
+      #ifndef ZgatewaySRFB // if we are not in sonoff rf bridge case we apply the ESP8266 pin optimization
+        Serial.end();
+        Serial.begin(SERIAL_BAUD, SERIAL_8N1, SERIAL_TX_ONLY);// enable on ESP8266 to free some pin
+      #endif
     #endif
+    
     #if defined(ESP8266) && !defined(ESPWifiManualSetup)
-      setup_wifimanager();
+      setup_wifimanager(false);
     #else // ESP32 case we don't use Wifi manager yet
       setup_wifi();
     #endif
@@ -294,18 +268,16 @@ void setup()
     //Launch serial for debugging purposes
     Serial.begin(SERIAL_BAUD);
     //Begining ethernet connection in case of Arduino + W5100
-    setup_ethernet();
-    //setup LED status, turn all ON for short amount then leave only the RED LED ON
-    pinMode(led_receive, OUTPUT);
-    pinMode(led_send, OUTPUT);
-    pinMode(led_error, OUTPUT);
-    digitalWrite(led_receive, LOW);
-    digitalWrite(led_send, LOW);
-    digitalWrite(led_error, LOW);
-    delay(500);
-    digitalWrite(led_receive, HIGH);
-    digitalWrite(led_send, HIGH);
+    setup_ethernet();    
   #endif
+
+  //setup LED status
+  pinMode(led_receive, OUTPUT);
+  pinMode(led_send, OUTPUT);
+  pinMode(led_info, OUTPUT);
+  digitalWrite(led_receive, LOW);
+  digitalWrite(led_send, LOW);
+  digitalWrite(led_info, LOW);
 
   #if defined(MDNS_SD) && defined(ESP8266)
      trc(F("Connecting to MQTT by mDNS without mqtt hostname"));
@@ -351,6 +323,9 @@ void setup()
   #ifdef ZgatewayIR
     setupIR();
   #endif
+  #ifdef ZgatewayLORA
+    setupLORA();
+  #endif
   #ifdef ZgatewayRF
     setupRF();
   #endif
@@ -359,6 +334,9 @@ void setup()
   #endif
   #ifdef ZgatewayRF2
     setupRF2();
+  #endif
+  #ifdef ZgatewayPilight
+    setupPilight();
   #endif
   #ifdef ZgatewaySRFB
     setupSRFB();
@@ -378,9 +356,15 @@ void setup()
   #ifdef ZsensorGPIOInput
     setupGPIOInput();
   #endif
+  #ifdef ZsensorGPIOKeyCode
+   setupGPIOKeyCode();
+  #endif
   
   trc(F("MQTT_MAX_PACKET_SIZE"));
   trc(MQTT_MAX_PACKET_SIZE);
+  #if defined(ESP8266) || defined(ESP32) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega1280__)
+    if(MQTT_MAX_PACKET_SIZE == 128) trc(F("WRONG PUBSUBCLIENT LIBRARY USED PLEASE INSTALL THE ONE FROM OMG LIB FOLDER"));
+  #endif
   trc(F("Setup OpenMQTTGateway end"));
 }
 
@@ -406,27 +390,35 @@ void setup_wifi() {
     failureAttempt++; //DIRTY FIX ESP32
     if (failureAttempt > 30) setup_wifi(); //DIRTY FIX ESP32
   }
-  
   trc(F("WiFi ok with manual config credentials"));
 }
 
 #elif defined(ESP8266) && !defined(ESPWifiManualSetup)
-void setup_wifimanager(){
-    #ifdef cleanFS
-    //clean FS, for testing
-      SPIFFS.format();
-    #endif
+//Wifi manager parameters
+//flag for saving data
+bool shouldSaveConfig = true;
+//do we have been connected once to mqtt
+
+//callback notifying us of the need to save config
+void saveConfigCallback () {
+  trc(F("Should save config"));
+  shouldSaveConfig = true;
+}
+
+void setup_wifimanager(boolean reset_settings){
+    if(reset_settings)  SPIFFS.format();
+
     //read configuration from FS json
-    trc("mounting FS...");
+    trc(F("mounting FS..."));
   
     if (SPIFFS.begin()) {
-      trc("mounted file system");
+      trc(F("mounted file system"));
       if (SPIFFS.exists("/config.json")) {
         //file exists, reading and loading
-        trc("reading config file");
+        trc(F("reading config file"));
         File configFile = SPIFFS.open("/config.json", "r");
         if (configFile) {
-          trc("opened config file");
+          trc(F("opened config file"));
           size_t size = configFile.size();
           // Allocate a buffer to store contents of the file.
           std::unique_ptr<char[]> buf(new char[size]);
@@ -436,7 +428,7 @@ void setup_wifimanager(){
           JsonObject& json = jsonBuffer.parseObject(buf.get());
           json.printTo(Serial);
           if (json.success()) {
-            trc("\nparsed json");
+            trc(F("\nparsed json"));
   
             strcpy(mqtt_server, json["mqtt_server"]);
             strcpy(mqtt_port, json["mqtt_port"]);
@@ -444,12 +436,12 @@ void setup_wifimanager(){
             strcpy(mqtt_pass, json["mqtt_pass"]);
   
           } else {
-            trc("failed to load json config");
+            trc(F("failed to load json config"));
           }
         }
       }
     } else {
-      trc("failed to mount FS");
+      trc(F("failed to mount FS"));
     }
   
     // The extra parameters to be configured (can be either global or just in the setup)
@@ -458,11 +450,13 @@ void setup_wifimanager(){
     WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 40);
     WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 6);
     WiFiManagerParameter custom_mqtt_user("user", "mqtt user", mqtt_user, 20);
-    WiFiManagerParameter custom_mqtt_pass("pass", "mqtt pass", mqtt_pass, 20);
+    WiFiManagerParameter custom_mqtt_pass("pass", "mqtt pass", mqtt_pass, 30);
   
    //WiFiManager
     //Local intialization. Once its business is done, there is no need to keep it around
     WiFiManager wifiManager;
+    //Set timeout before going to portal
+    wifiManager.setConfigPortalTimeout(WifiManager_ConfigPortalTimeOut);
   
     //set config save notify callback
     wifiManager.setSaveConfigCallback(saveConfigCallback);
@@ -476,18 +470,15 @@ void setup_wifimanager(){
     wifiManager.addParameter(&custom_mqtt_user);
     wifiManager.addParameter(&custom_mqtt_pass);
 
-    #ifdef cleanFS
-      //reset settings - for testing
-      wifiManager.resetSettings();
-    #endif
+    if(reset_settings)  wifiManager.resetSettings();
     //set minimu quality of signal so it ignores AP's under that quality
     wifiManager.setMinimumSignalQuality(MinimumWifiSignalQuality);
   
     //fetches ssid and pass and tries to connect
     //if it does not connect it starts an access point with the specified name
     //and goes into a blocking loop awaiting configuration
-    if (!wifiManager.autoConnect(Gateway_Name, WifiManager_password)) {
-      trc("failed to connect and hit timeout");
+    if (!wifiManager.autoConnect(WifiManager_ssid, WifiManager_password)) {
+      trc(F("failed to connect and hit timeout"));
       delay(3000);
       //reset and try again, or maybe put it to deep sleep
       ESP.reset();
@@ -495,7 +486,7 @@ void setup_wifimanager(){
     }
   
     //if you get here you have connected to the WiFi
-    trc("connected...yeey :)");
+    trc(F("connected...yeey :)"));
   
     //read updated parameters
     strcpy(mqtt_server, custom_mqtt_server.getValue());
@@ -505,7 +496,7 @@ void setup_wifimanager(){
   
     //save the custom parameters to FS
     if (shouldSaveConfig) {
-      trc("saving config");
+      trc(F("saving config"));
       DynamicJsonBuffer jsonBuffer;
       JsonObject& json = jsonBuffer.createObject();
       json["mqtt_server"] = mqtt_server;
@@ -515,7 +506,7 @@ void setup_wifimanager(){
     
       File configFile = SPIFFS.open("/config.json", "w");
       if (!configFile) {
-        trc("failed to open config file for writing");
+        trc(F("failed to open config file for writing"));
       }
   
       json.printTo(Serial);
@@ -525,8 +516,8 @@ void setup_wifimanager(){
     }
 }
 
-
 #else // Arduino case
+
 void setup_ethernet() {
   if (gateway[0] != 0 || Dns[0]!=0)
   {
@@ -556,7 +547,7 @@ void setup_ethernet() {
         trc(F("no services found"));
     }else {
         trc(n);
-        trc(" service(s) found");
+        trc(F(" service(s) found"));
         for (int i=0; i < n; ++i) {
             // Print details for each service found
             trc(i + 1);
@@ -576,13 +567,13 @@ void setup_ethernet() {
 
 void loop()
 {
- 
-    unsigned long now = millis();
+  digitalWrite(led_receive, LOW);
+  digitalWrite(led_info, LOW);
+  digitalWrite(led_send, LOW);
+  
+  unsigned long now = millis();
   //MQTT client connexion management
   if (!client.connected()) { // not connected
-
-    //RED ON
-    digitalWrite(led_error, LOW);
 
     if (now - lastReconnectAttempt > 5000) {
       lastReconnectAttempt = now;
@@ -593,12 +584,6 @@ void loop()
     }
   } else { //connected
     // MQTT loop
-    //RED OFF
-    if (now - timer_led_receive > 300) {
-      timer_led_receive = now;
-      digitalWrite(led_receive, HIGH);
-    }
-    digitalWrite(led_error, HIGH);
     connectedOnce = true;
     client.loop();
 
@@ -627,43 +612,32 @@ void loop()
     #ifdef ZsensorGPIOInput
       MeasureGPIOInput();
     #endif
+    #ifdef ZsensorGPIOKeyCode
+      MeasureGPIOKeyCode();
+    #endif
     #ifdef ZsensorADC
       MeasureADC(); //Addon to measure the analog value of analog pin
     #endif
+    #ifdef ZgatewayLORA
+      LORAtoMQTT();
+    #endif
     #ifdef ZgatewayRF
-      if(RFtoMQTT()){
-      trc(F("RFtoMQTT OK"));
-      //GREEN ON
-      digitalWrite(led_receive, LOW);
-      timer_led_receive = millis();
-      }
+      RFtoMQTT();
     #endif
     #ifdef ZgatewayRF315
-      if(RF315toMQTT()){
-      trc(F("RF315toMQTT OK"));
-      //GREEN ON
-      digitalWrite(led_receive, LOW);
-      timer_led_receive = millis();
-      }
+      RF315toMQTT();
     #endif
     #ifdef ZgatewayRF2
-      if(RF2toMQTT()){
-      trc(F("RF2toMQTT OK"));
-      digitalWrite(led_receive, LOW);
-      timer_led_receive = millis();
-      }
+      RF2toMQTT();
+    #endif
+    #ifdef ZgatewayPilight
+      PilighttoMQTT();
     #endif
     #ifdef ZgatewaySRFB
-      if(SRFBtoMQTT())
-      trc(F("SRFBtoMQTT OK"));
+      SRFBtoMQTT();
     #endif
     #ifdef ZgatewayIR
-      if(IRtoMQTT())      {
-      trc(F("IRtoMQTT OK"));
-      digitalWrite(led_receive, LOW);
-      timer_led_receive = millis();
-      delay(100);
-      }
+      IRtoMQTT();
     #endif
     #ifdef ZgatewayBT
         #ifndef multiCore
@@ -680,37 +654,39 @@ void loop()
       if(RFM69toMQTT())
       trc(F("RFM69toMQTT OK"));
     #endif
-    #if defined(ESP8266) || defined(ESP32)
+    #if defined(ESP8266) || defined(ESP32) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega1280__)
       stateMeasures();
     #endif
   }
 }
 
-#if defined(ESP8266) || defined(ESP32)
+#if defined(ESP8266) || defined(ESP32) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega1280__)
 void stateMeasures(){
     unsigned long now = millis();
     if (now > (timer_sys_measures + TimeBetweenReadingSYS)) {//retriving value of memory ram every TimeBetweenReadingSYS
       timer_sys_measures = millis();
-      StaticJsonBuffer<200> jsonBuffer;
+      StaticJsonBuffer<JSON_MSG_BUFFER> jsonBuffer;
       JsonObject& SYSdata = jsonBuffer.createObject();
-      trc("Uptime (s)");    
+      trc(F("Uptime (s)"));    
       unsigned long uptime = millis()/1000;
       trc(uptime);
       SYSdata["uptime"] = uptime;
-      trc("Remaining memory");
-      uint32_t freeMem;
-      freeMem = ESP.getFreeHeap();
-      SYSdata["freeMem"] = freeMem;
-      trc(freeMem);
-      trc("RSSI");
-      long rssi = WiFi.RSSI();
-      SYSdata["rssi"] = rssi;
-      trc(rssi);
-      trc("SSID");
-      String SSID = WiFi.SSID();
-      SYSdata["SSID"] = SSID;
-      trc(SSID);
-      trc("Activated modules");
+      #if defined(ESP8266) || defined(ESP32)
+        trc(F("Remaining memory"));
+        uint32_t freeMem;
+        freeMem = ESP.getFreeHeap();
+        SYSdata["freeMem"] = freeMem;
+        trc(freeMem);
+        trc(F("RSSI"));
+        long rssi = WiFi.RSSI();
+        SYSdata["rssi"] = rssi;
+        trc(rssi);
+        trc(F("SSID"));
+        String SSID = WiFi.SSID();
+        SYSdata["SSID"] = SSID;
+        trc(SSID);
+      #endif
+      trc(F("Activated modules"));
       String modules = "";
       #ifdef ZgatewayRF
           modules = modules + ZgatewayRF;
@@ -719,49 +695,65 @@ void stateMeasures(){
           modules = modules + ZgatewayRF315;
       #endif
       #ifdef ZsensorBME280
-          modules = modules  + ZsensorBME280;
+          modules = modules + ZsensorBME280;
       #endif
       #ifdef ZsensorBH1750
-          modules = modules  + ZsensorBH1750;
+          modules = modules + ZsensorBH1750;
       #endif
       #ifdef ZsensorTSL2561
-          modules = modules  + ZsensorTSL2561;
+          modules = modules + ZsensorTSL2561;
       #endif
       #ifdef ZactuatorONOFF
-          modules = modules  + ZactuatorONOFF;
+          modules = modules + ZactuatorONOFF;
       #endif
       #ifdef Zgateway2G
-          modules = modules  + Zgateway2G;
+          modules = modules + Zgateway2G;
       #endif
       #ifdef ZgatewayIR
-          modules = modules  + ZgatewayIR;
+          modules = modules + ZgatewayIR;
+      #endif
+      #ifdef ZgatewayLORA
+          modules = modules + ZgatewayLORA;
       #endif
       #ifdef ZgatewayRF2
-          modules = modules  + ZgatewayRF2;
+          modules = modules + ZgatewayRF2;
+      #endif
+      #ifdef ZgatewayPilight
+          modules = modules  + ZgatewayPilight;
       #endif
       #ifdef ZgatewaySRFB
-          modules = modules  + ZgatewaySRFB;
+          modules = modules + ZgatewaySRFB;
       #endif
       #ifdef ZgatewayBT
-          modules = modules  + ZgatewayBT;
+          modules = modules + ZgatewayBT;
       #endif
       #ifdef ZgatewayRFM69
-          modules = modules  + ZgatewayRFM69;
+          modules = modules + ZgatewayRFM69;
       #endif
       #ifdef ZsensorINA226
-          modules = modules  + ZsensorINA226;
+          modules = modules + ZsensorINA226;
       #endif
       #ifdef ZsensorHCSR501
-          modules = modules  + ZsensorHCSR501;
+          modules = modules + ZsensorHCSR501;
       #endif
       #ifdef ZsensorGPIOInput
-          modules = modules  + ZsensorGPIOInput;
+          modules = modules + ZsensorGPIOInput;
+      #endif
+      #ifdef ZsensorGPIOKeyCode
+          modules = modules + ZsensorGPIOKeyCode;
+      #endif
+      #ifdef ZsensorGPIOKeyCode
+          modules = modules  + ZsensorGPIOKeyCode;
+      #endif
+      #ifdef ZmqttDiscovery
+          modules = modules  + ZmqttDiscovery;
+          pubMqttDiscovery();
       #endif
       SYSdata["modules"] = modules;
       trc(modules);
       char JSONmessageBuffer[100];
       SYSdata.printTo(JSONmessageBuffer, sizeof(JSONmessageBuffer));
-      client.publish(subjectSYStoMQTT,JSONmessageBuffer);
+      pub(subjectSYStoMQTT,JSONmessageBuffer);
     }
 }
 #endif
@@ -814,39 +806,96 @@ return false;
 
 void receivingMQTT(char * topicOri, char * datacallback) {
 
-   if (strstr(topicOri, subjectMultiGTWKey) != NULL) // storing received value so as to avoid publishing this value if it has been already sent by this or another OpenMQTTGateway
-   {
-      trc(F("Storing signal"));
-      unsigned long data = strtoul(datacallback, NULL, 10); // we will not be able to pass values > 4294967295
+  StaticJsonBuffer<JSON_MSG_BUFFER> jsonBuffer;
+  JsonObject& jsondata = jsonBuffer.parseObject(datacallback);
+  
+  if (strstr(topicOri, subjectMultiGTWKey) != NULL) // storing received value so as to avoid publishing this value if it has been already sent by this or another OpenMQTTGateway
+  {
+    trc(F("Store signal"));
+    unsigned long data = 0;
+    #ifdef jsonPublishing
+      if (jsondata.success())  data =  jsondata["value"];
+    #endif
+
+    #ifdef simplePublishing
+      data = strtoul(datacallback, NULL, 10); // we will not be able to pass values > 4294967295
+    #endif
+    
+    if (data != 0) {
       storeValue(data);
-      trc(F("Data stored"));
-   }
-//YELLOW ON
-digitalWrite(led_send, LOW);
-#ifdef ZgatewayRF
-  MQTTtoRF(topicOri, datacallback);
-#endif
-#ifdef ZgatewayRF315
-  MQTTtoRF315(topicOri, datacallback);
-#endif
-#ifdef ZgatewayRF2
-  MQTTtoRF2(topicOri, datacallback);
-#endif
-#ifdef Zgateway2G
-  MQTTto2G(topicOri, datacallback);
-#endif
-#ifdef ZgatewaySRFB
-  MQTTtoSRFB(topicOri, datacallback);
-#endif
-#ifdef ZgatewayIR
-  MQTTtoIR(topicOri, datacallback);
-#endif
-#ifdef ZgatewayRFM69
-  MQTTtoRFM69(topicOri, datacallback);
-#endif
-#ifdef ZactuatorONOFF
-  MQTTtoONOFF(topicOri, datacallback);
-#endif
+      trc(F("Data JSON stored"));
+    }
+  }
+
+  if (jsondata.success()) { // json object ok -> json decoding
+   #ifdef ZgatewayPilight // ZgatewayPilight is only defined with json publishing
+     MQTTtoPilight(topicOri, jsondata);
+   #endif
+   #ifdef jsonReceiving
+    #ifdef ZgatewayLORA
+      MQTTtoLORA(topicOri, jsondata);
+    #endif
+    #ifdef ZgatewayRF
+      MQTTtoRF(topicOri, jsondata);
+    #endif
+    #ifdef ZgatewayRF315
+      MQTTtoRF315(topicOri, jsondata);
+    #endif
+    #ifdef ZgatewayRF2
+      MQTTtoRF2(topicOri, jsondata);
+    #endif
+    #ifdef Zgateway2G
+      MQTTto2G(topicOri, jsondata);
+    #endif
+    #ifdef ZgatewaySRFB
+      MQTTtoSRFB(topicOri, jsondata);
+    #endif
+    #ifdef ZgatewayIR
+      MQTTtoIR(topicOri, jsondata);
+    #endif
+    #ifdef ZgatewayRFM69
+      MQTTtoRFM69(topicOri, jsondata);
+    #endif
+    #ifdef ZgatewayBT
+      MQTTtoBT(topicOri, jsondata);
+    #endif
+   #endif
+    #ifdef ZactuatorONOFF // outside the jsonpublishing macro due to the fact that we need to use simplepublishing with HA discovery
+      MQTTtoONOFF(topicOri, jsondata);
+    #endif
+    digitalWrite(led_send, HIGH);
+  } else { // not a json object --> simple decoding
+   #ifdef simpleReceiving
+      #ifdef ZgatewayLORA
+        MQTTtoLORA(topicOri, datacallback);
+      #endif
+      #ifdef ZgatewayRF
+        MQTTtoRF(topicOri, datacallback);
+      #endif
+      #ifdef ZgatewayRF315
+        MQTTtoRF315(topicOri, datacallback);
+      #endif
+      #ifdef ZgatewayRF2
+        MQTTtoRF2(topicOri, datacallback);
+      #endif
+      #ifdef Zgateway2G
+        MQTTto2G(topicOri, datacallback);
+      #endif
+      #ifdef ZgatewaySRFB
+        MQTTtoSRFB(topicOri, datacallback);
+      #endif
+      #ifdef ZgatewayIR
+        MQTTtoIR(topicOri, datacallback);
+      #endif
+      #ifdef ZgatewayRFM69
+        MQTTtoRFM69(topicOri, datacallback);
+      #endif
+  #endif
+  #ifdef ZactuatorONOFF
+    MQTTtoONOFF(topicOri, datacallback);
+  #endif
+  digitalWrite(led_send, HIGH);
+  }
 //YELLOW OFF
 digitalWrite(led_send, HIGH);
 }
@@ -881,6 +930,14 @@ void revert_hex_data(char * in, char * out, int l){
   out[l-1] = '\0';
 }
 
+int strpos(char *haystack, char *needle) //from @miere https://stackoverflow.com/users/548685/miere
+{
+   char *p = strstr(haystack, needle);
+   if (p)
+      return p - haystack;
+   return -1;
+}
+
 bool to_bool(String const& s) { // thanks Chris Jester-Young from stackoverflow
      return s != "0";
 }
@@ -888,42 +945,198 @@ bool to_bool(String const& s) { // thanks Chris Jester-Young from stackoverflow
 //trace
 void trc(String msg){
   #ifdef TRACE
-  Serial.println(msg);
+    Serial.println(msg);
+    digitalWrite(led_info, HIGH);
+  #endif
+  #ifdef subjectTRACEtoMQTT
+    pub(subjectTRACEtoMQTT,msg);
   #endif
 }
 
 void trc(int msg){
   #ifdef TRACE
-  Serial.println(msg);
+    Serial.println(msg);
+    digitalWrite(led_info, HIGH);
+  #endif
+  #ifdef subjectTRACEtoMQTT
+    pub(subjectTRACEtoMQTT,msg);
   #endif
 }
 
 void trc(unsigned int msg){
   #ifdef TRACE
-  Serial.println(msg);
+    Serial.println(msg);
+    digitalWrite(led_info, HIGH);
+  #endif
+  #ifdef subjectTRACEtoMQTT
+    pub(subjectTRACEtoMQTT,msg);
   #endif
 }
 
 void trc(long msg){
   #ifdef TRACE
-  Serial.println(msg);
+    Serial.println(msg);
+    digitalWrite(led_info, HIGH);
+  #endif
+  #ifdef subjectTRACEtoMQTT
+    pub(subjectTRACEtoMQTT,msg);
   #endif
 }
 
 void trc(unsigned long msg){
   #ifdef TRACE
-  Serial.println(msg);
+    Serial.println(msg);
+    digitalWrite(led_info, HIGH);
+  #endif
+  #ifdef subjectTRACEtoMQTT
+    pub(subjectTRACEtoMQTT,msg);
   #endif
 }
 
 void trc(double msg){
   #ifdef TRACE
-  Serial.println(msg);
+    Serial.println(msg);
+    digitalWrite(led_info, HIGH);
+  #endif
+  #ifdef subjectTRACEtoMQTT
+    pub(subjectTRACEtoMQTT,msg);
   #endif
 }
 
 void trc(float msg){
   #ifdef TRACE
-  Serial.println(msg);
+    Serial.println(msg);
+    digitalWrite(led_info, HIGH);
   #endif
+  #ifdef subjectTRACEtoMQTT
+    pub(subjectTRACEtoMQTT,msg);
+  #endif
+}
+
+void pub(char * topic, char * payload, boolean retainFlag){
+    client.publish(topic, payload, retainFlag);
+}
+
+void pub(char * topicori, JsonObject& data){
+  
+    digitalWrite(led_receive, HIGH);
+    
+    String topic = topicori;
+    #ifdef valueAsASubject
+      unsigned long value = data["value"];
+      if (value != 0){
+        topic = topic + "/"+ String(value);
+      }
+    #endif
+    
+    #ifdef jsonPublishing
+      char JSONmessageBuffer[JSON_MSG_BUFFER];
+      trc(F("Pub json into:"));
+      trc(topic);
+      data.printTo(JSONmessageBuffer, sizeof(JSONmessageBuffer));
+      trc(JSONmessageBuffer);
+      pub(topic, JSONmessageBuffer);
+    #endif
+
+    #ifdef simplePublishing
+      trc(F("Pub data per topic"));
+      // Loop through all the key-value pairs in obj 
+      for (JsonPair& p : data) {
+        #if defined(ESP8266)
+          yield();
+        #endif
+        if (p.value.is<unsigned long>() && strcmp(p.key, "rssi") != 0) { //test rssi , bypass solution due to the fact that a int is considered as an unsigned long
+          trc(p.key);
+          trc(p.value.as<unsigned long>());
+          if (strcmp(p.key, "value") == 0){ // if data is a value we don't integrate the name into the topic
+            pub(topic,p.value.as<unsigned long>());
+          }else{ // if data is not a value we integrate the name into the topic
+            pub(topic + "/" + String(p.key),p.value.as<unsigned long>());
+          }
+        }else if (p.value.is<int>()) {
+          trc(p.key);
+          trc(p.value.as<int>());
+          pub(topic + "/" + String(p.key),p.value.as<int>());
+        } else if (p.value.is<float>()) {
+          trc(p.key);
+          trc(p.value.as<float>());
+          pub(topic + "/" + String(p.key),p.value.as<float>());
+        } else if (p.value.is<char*>()) {
+          trc(p.key);
+          trc(p.value.as<const char*>());
+          pub(topic + "/" + String(p.key),p.value.as<const char*>());
+        }
+      }
+    #endif
+
+}
+
+void pub(char * topic, char * payload){
+    client.publish(topic, payload);
+}
+
+void pub(char * topic, String payload){
+    client.publish(topic,(char *)payload.c_str());
+}
+
+void pub(String topic, String payload){
+    client.publish((char *)topic.c_str(),(char *)payload.c_str());
+}
+
+void pub(String topic, char *  payload){
+    client.publish((char *)topic.c_str(),payload);
+}
+
+void pub(String topic, int payload){
+    char val[12];
+    sprintf(val, "%d", payload);
+    client.publish((char *)topic.c_str(),val);
+}
+
+void pub(String topic, float payload){
+    char val[12];
+    dtostrf(payload,3,1,val);
+    client.publish((char *)topic.c_str(),val);
+}
+
+void pub(char * topic, float payload){
+    char val[12];
+    dtostrf(payload,3,1,val);
+    client.publish(topic,val);
+}
+
+void pub(char * topic, int payload){
+    char val[6];
+    sprintf(val, "%d", payload);
+    client.publish(topic,val);
+}
+
+void pub(char * topic, unsigned int payload){
+    char val[6];
+    sprintf(val, "%u", payload);
+    client.publish(topic,val);
+}
+
+void pub(char * topic, unsigned long payload){
+    char val[11];
+    sprintf(val, "%lu", payload);
+    client.publish(topic,val);
+}
+
+void pub(char * topic, long payload){
+    char val[11];
+    sprintf(val, "%l", payload);
+    client.publish(topic,val);
+}
+
+void pub(char * topic, double payload){
+    char val[16];
+    sprintf(val, "%d", payload);
+    client.publish(topic,val);
+}
+
+void pub(String topic, unsigned long payload){
+    char val[11];
+    sprintf(val, "%lu", payload);
+    client.publish((char *)topic.c_str(),val);
 }

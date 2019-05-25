@@ -54,13 +54,18 @@ void setupZsensorBH1750()
 void MeasureLightIntensity()
 {
   if (millis() > (timebh1750 + TimeBetweenReadingBH1750)) {//retriving value of Lux, FtCd and Wattsm2 from BH1750
+    trc(F("Creating BH1750 buffer"));
+    const int JSON_MSG_CALC_BUFFER = JSON_OBJECT_SIZE(3);
+    StaticJsonBuffer<JSON_MSG_CALC_BUFFER> jsonBuffer;
+    JsonObject& BH1750data = jsonBuffer.createObject();
+    
     timebh1750 = millis();
     unsigned int i=0;
     static float persistedll;
     static float persistedlf;
     static float persistedlw;
     unsigned int Lux;
-    float FtCd;
+    float ftcd;
     float Wattsm2;
 
     // Check if reads failed and exit early (to try again).
@@ -74,7 +79,7 @@ void MeasureLightIntensity()
 
       // Calculate the Values
       Lux = i/1.2;  // Convert to Lux
-      FtCd = Lux/10.764;
+      ftcd = Lux/10.764;
       Wattsm2 = Lux/683.0;
 
       /*
@@ -94,34 +99,28 @@ void MeasureLightIntensity()
 
       // Generate Lux
       if(Lux != persistedll || bh1750_always){
-        trc(F("Sending Lux to MQTT"));
-        trc(Lux);
-        client.publish(LUX,String(Lux).c_str());
+        BH1750data.set("lux", (unsigned int)Lux);
        }else{
         trc(F("Same lux don't send it"));
        }
 
       // Generate FtCd
-      if(FtCd != persistedlf || bh1750_always){
-        trc(F("Sending FtCd to MQTT"));
-        trc(FtCd);
-        client.publish(FTCD,String(FtCd).c_str());
+      if(ftcd != persistedlf || bh1750_always){
+        BH1750data.set("ftcd", (unsigned int)ftcd);
       }else{
         trc(F("Same ftcd don't send it"));
       }
 
       // Generate Watts/m2
       if(Wattsm2 != persistedlw || bh1750_always){
-        trc(F("Sending Wattsm2 to MQTT"));
-        trc(Wattsm2);
-        client.publish(WATTSM2,String(Wattsm2).c_str());
+        BH1750data.set("wattsm2", (unsigned int)Wattsm2);
       }else{
         trc(F("Same wattsm2 don't send it"));
-      }    
-
+      }
+      if(BH1750data.size()>0) pub(subjectBH1750toMQTT,BH1750data);
     }
     persistedll = Lux;
-    persistedlf = FtCd;
+    persistedlf = ftcd;
     persistedlw = Wattsm2;
   }
 }

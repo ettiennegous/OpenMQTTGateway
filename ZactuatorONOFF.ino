@@ -38,22 +38,34 @@ void setupONOFF(){
   trc(F("ZactuatorONOFF setup done "));
 }
 
-void MQTTtoONOFF(char * topicOri, char * datacallback){
+  void MQTTtoONOFF(char * topicOri, char * datacallback){
+  
+    int boolSWITCHTYPE;
+    if (strcmp(datacallback, "ON") == 0) boolSWITCHTYPE = 1;
+    if (strcmp(datacallback, "OFF") == 0) boolSWITCHTYPE = 0; 
 
-  bool boolSWITCHTYPE;
-  boolSWITCHTYPE = to_bool(datacallback);
-  String topic = topicOri;
- 
-  if ((topic == subjectMQTTtoONOFF)){
-    trc(F("MQTTtoONOFF"));
-    trc(boolSWITCHTYPE);
-    digitalWrite(ACTUATOR_ONOFF_PIN, boolSWITCHTYPE);
-    boolean result = client.publish(subjectGTWONOFFtoMQTT, datacallback);// we acknowledge the sending by publishing the value to an acknowledgement topic
-    if (result){
-      trc(F("MQTTtoONOFF ack pub."));
-      trc(datacallback);
+   if (strcmp(topicOri,subjectMQTTtoONOFF) == 0){
+      trc(F("MQTTtoONOFF data analysis"));
+      trc(boolSWITCHTYPE);
+      digitalWrite(ACTUATOR_ONOFF_PIN, boolSWITCHTYPE);
+      // we acknowledge the sending by publishing the value to an acknowledgement topic
+      pub(subjectGTWONOFFtoMQTT, datacallback);
     }
   }
-}
+  void MQTTtoONOFF(char * topicOri, JsonObject& ONOFFdata){
+   
+   if (strcmp(topicOri,subjectMQTTtoONOFF) == 0){
+      trc(F("MQTTtoONOFF json data analysis"));
+      int boolSWITCHTYPE = ONOFFdata["switchType"] | 99;
+      if (boolSWITCHTYPE != 99) {
+        trc(F("MQTTtoONOFF boolSWITCHTYPE ok"));
+        trc(boolSWITCHTYPE);
+        digitalWrite(ACTUATOR_ONOFF_PIN, boolSWITCHTYPE);
+        // we acknowledge the sending by publishing the value to an acknowledgement topic
+        pub(subjectGTWONOFFtoMQTT, ONOFFdata);
+      }else{
+        trc(F("MQTTtoONOFF Fail reading from json"));
+      }
+    }
+  }
 #endif
-
